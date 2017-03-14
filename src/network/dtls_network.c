@@ -36,8 +36,15 @@ typedef struct _connection_t_
     struct sockaddr_in     addr;
     size_t                  addrLen;
 
+    uint8_t                 securityMode;
+    char                    *identity;
+    unsigned char           *psk;
+    size_t                  pskLen;
+    
+
 #ifdef USE_MBEDTLS
     mbedtls_ssl_context ssl;
+    mbedtls_ssl_config conf;
 #endif
 } connection_t;
 
@@ -177,10 +184,10 @@ int lwm2m_mbedtls_get_delay(void *data)
   return 0;
 }
 
-//static lwm2m_mbedtls_delay_context g_delayCtx;
+static lwm2m_mbedtls_delay_context g_delayCtx;
 static mbedtls_entropy_context g_entropy;
 static mbedtls_ctr_drbg_context g_ctr_drbg;
-static mbedtls_ssl_config g_conf;
+//static mbedtls_ssl_config g_conf;
 
 static int lwm2m_mbedtls_common_init()
 {
@@ -189,7 +196,7 @@ static int lwm2m_mbedtls_common_init()
   // original calloc in mbedtls lib cannot get memory successfully.
   // TODO: non-thread safe in current implementation
   mbedtls_platform_set_calloc_free(lwm2m_mbedtls_calloc, lwm2m_mbedtls_free);
-  mbedtls_ssl_config_init(&g_conf);
+  //mbedtls_ssl_config_init(&g_conf);
   mbedtls_ctr_drbg_init(&g_ctr_drbg);
   mbedtls_entropy_init(&g_entropy);
   if ((ret = mbedtls_ctr_drbg_seed(&g_ctr_drbg, mbedtls_entropy_func, &g_entropy,
@@ -225,31 +232,46 @@ static int lwm2m_mbedtls_ssl_init(connection_t *conn)
                                                     
 static uint8_t gPsk[4] = {0x26, 0x43, 0x60, 0x77};
 static int gCiphersuite[2];
-static int lwm2m_mbedtls_set_config(uint8_t *psk, uint32_t psk_len, char *identity)
+static int lwm2m_mbedtls_set_config(connection_t *conn/*, uint8_t securityMode,
+                                    uint8_t *psk, uint32_t psk_len, char *identity*/)
 {
   int ret;
-  gCiphersuite[0] = mbedtls_ssl_get_ciphersuite_id("TLS-PSK-WITH-AES-128-CCM-8");
   
-  if ((ret = mbedtls_ssl_config_defaults(&g_conf, MBEDTLS_SSL_IS_CLIENT,
+  /*conn->securityMode = securityMode;
+  if (securityMode != LWM2M_SECURITY_MODE_NONE) {
+    if (NULL == psk || NULL == identity || 0 == psk_len) return -1;
+    
+    memcpy(conn->psk, psk, psk_len);
+    strncpy(conn->identity, identity, strlen(identity));
+    conn->pskLen = psk_len;
+  }*/
+  
+  gCiphersuite[0] = mbedtls_ssl_get_ciphersuite_id("TLS-PSK-WITH-AES-128-CCM-8");
+
+  mbedtls_ssl_config_init(&conn->conf);
+  if ((ret = mbedtls_ssl_config_defaults(&conn->conf, MBEDTLS_SSL_IS_CLIENT,
                                          MBEDTLS_SSL_TRANSPORT_DATAGRAM,
                                          MBEDTLS_SSL_PRESET_DEFAULT)) != 0) {
     printf("failed\n ! mbedtls_ssl_config_defaults returned %d\n", ret);
     return -1;                                           
   }
 
-  mbedtls_ssl_conf_rng(&g_conf, mbedtls_ctr_drbg_random, &g_ctr_drbg);
+  mbedtls_ssl_conf_rng(&conn->conf, mbedtls_ctr_drbg_random, &g_ctr_drbg);
   //mbedtls_ssl_conf_dbg( &conn->conf, lwm2m_mbedtls_debug, NULL);
 
-  mbedtls_ssl_conf_ciphersuites(&g_conf, gCiphersuite);
-;
-  if ((ret = mbedtls_ssl_conf_psk(&g_conf, psk, psk_len, identity,
-                                  strlen(identity))) != 0) {
-    printf("%s, %d, failed\n ! mbedtls_ssl_conf_psk returned 0x%X\n", __func__, __LINE__, -ret);    
-    return -1;
+  mbedtls_ssl_conf_ciphersuites(&conn->conf, gCiphersuite);
+
+  if (conn->securityMode == LWM2M_SECURITY_MODE_PRE_SHARED_KEY) {
+    if ((ret = mbedtls_ssl_conf_psk(&conn->conf, conn->psk, conn->pskLen,
+                                    conn->identity,
+                                    strlen(conn->identity))) != 0) {
+      printf("%s, %d, failed\n ! mbedtls_ssl_conf_psk returned 0x%X\n", __func__, __LINE__, -ret);    
+      return -1;
+    }
   }
 
-  mbedtls_ssl_conf_handshake_timeout(&g_conf, 1000, 30000);
-  mbedtls_ssl_conf_read_timeout(&g_conf, 1000);
+  mbedtls_ssl_conf_handshake_timeout(&conn->conf, 1000, 30000);
+  mbedtls_ssl_conf_read_timeout(&conn->conf, 1000);
   printf("%s, %d\n", __func__, __LINE__);
   return 0;
 }
@@ -257,7 +279,7 @@ static int lwm2m_mbedtls_set_config(uint8_t *psk, uint32_t psk_len, char *identi
 static int lwm2m_mbedtls_ssl_setup(connection_t *conn)
 {
   int ret;
-  if ((ret = mbedtls_ssl_setup(&conn->ssl, &g_conf)) != 0) {
+  if ((ret = mbedtls_ssl_setup(&conn->ssl, &conn->conf)) != 0) {
     printf("%s, %d, failed\n ! mbedtls_ssl_setup returned 0x%x\n", __func__, __LINE__, ret);    
     return -1;     
   }
@@ -282,14 +304,14 @@ static void lwm2m_mbedtls_ssl_close(connection_t *conn)
   vPortFree(conn->ssl.p_timer);
   mbedtls_ssl_close_notify(&conn->ssl);
   mbedtls_ssl_free(&conn->ssl);
-  //mbedtls_ssl_config_free(&conn->conf);
+  mbedtls_ssl_config_free(&conn->conf);
   //mbedtls_ctr_drbg_free(&conn->ctr_drbg);
   //mbedtls_entropy_free(&conn->entropy);
 }
 
 static void lwm2m_mbedtls_close()
 {
-  mbedtls_ssl_config_free(&g_conf);
+  //mbedtls_ssl_config_free(&g_conf);
   mbedtls_ctr_drbg_free(&g_ctr_drbg);
   mbedtls_entropy_free(&g_entropy);
 }
@@ -376,7 +398,7 @@ uint8_t lwm2m_network_init(lwm2m_context_t * contextP, const char *localPort) {
             // bind
         struct sockaddr_in c_addr;
   c_addr.sin_family = AF_INET;
-  c_addr.sin_addr.s_addr = inet_addr("192.168.2.127");
+  c_addr.sin_addr.s_addr = inet_addr("192.168.2.208");
   c_addr.sin_port = htons(12873);
   
             //if (-1 == bind(network->socket_handle[network->open_listen_sockets], p->ai_addr, p->ai_addrlen))
@@ -400,10 +422,10 @@ uint8_t lwm2m_network_init(lwm2m_context_t * contextP, const char *localPort) {
       return -1;
     }
     
-    if (lwm2m_mbedtls_set_config(gPsk, sizeof(gPsk), "od_identity") < 0) {
+    /*if (lwm2m_mbedtls_set_config(gPsk, sizeof(gPsk), "od_identity") < 0) {
       lwm2m_mbedtls_close();
       return -1;
-    }
+    }*/
 #endif
     return network->open_listen_sockets;
 }
@@ -467,19 +489,14 @@ bool lwm2m_network_process(lwm2m_context_t * contextP) {
         printf("%s, %d, socket = %d no data.\n", __func__, __LINE__, network->socket_handle[c]);        
         continue;
       }
-		// FIXME: Original implementation is get sockaddr by recvfrom, and
-		// check whether the connection of address exists or not.
-		// However, wolfSSL_read doesn't provide the arguments to pass back sockaddr.
-		// I decide not to add a new pointer to network->connection_list but I am
-		// not sure it will lead to another problem or not.
 #ifdef USE_MBEDTLS
-		// Use MSG_PEEK to peek the information from queue without poping it.
-		// We will pop the packet date later with mbedtls_ssl_read.
-        numBytes = recvfrom(network->socket_handle[c], buffer, MAX_PACKET_SIZE,
-							MSG_PEEK, (struct sockaddr *)&addr, &addrLen);
+      // Use MSG_PEEK to peek the information from queue without poping it.
+      // We will pop the packet date later with mbedtls_ssl_read.
+      numBytes = recvfrom(network->socket_handle[c], buffer, MAX_PACKET_SIZE,
+                          MSG_PEEK, (struct sockaddr *)&addr, &addrLen);
 #else
-        numBytes = recvfrom(network->socket_handle[c], buffer, MAX_PACKET_SIZE,
-							0, (struct sockaddr *)&addr, &addrLen);
+      numBytes = recvfrom(network->socket_handle[c], buffer, MAX_PACKET_SIZE,
+                          0, (struct sockaddr *)&addr, &addrLen);
 #endif
         if (numBytes < 0)
         {
@@ -503,14 +520,21 @@ bool lwm2m_network_process(lwm2m_context_t * contextP) {
 
 #ifdef USE_MBEDTLS
             if (lwm2m_mbedtls_ssl_init(connP) < 0) {
-              free(connP);
+              connection_free(connP);
               connP = NULL;
               goto failed;
             }
-
+            
+            if (lwm2m_mbedtls_set_config(connP) < 0) {
+              lwm2m_mbedtls_ssl_close(connP);
+              connection_free(connP);
+              connP = NULL;
+              goto failed;
+            }
+        
             if (lwm2m_mbedtls_ssl_setup(connP) < 0) {
               lwm2m_mbedtls_ssl_close(connP);
-              free(connP);
+              connection_free(connP);
               connP = NULL;
               goto failed;
             }
@@ -526,9 +550,15 @@ bool lwm2m_network_process(lwm2m_context_t * contextP) {
             #endif
             
 #ifdef USE_MBEDTLS
-            if ((numBytes = mbedtls_ssl_read(&connP->ssl, buffer, MAX_PACKET_SIZE)) <= 0) {
-              printf("%s, %d\n", __func__, __LINE__);
-              continue;
+            if (connP->securityMode == LWM2M_SECURITY_MODE_PRE_SHARED_KEY) {
+                printf("%s, %d\n", __func__, __LINE__);
+              if ((numBytes = mbedtls_ssl_read(&connP->ssl, buffer, MAX_PACKET_SIZE)) <= 0) {
+                printf("%s, %d\n", __func__, __LINE__);
+                continue;
+              }
+            } else {
+              numBytes = recvfrom(network->socket_handle[c], buffer, MAX_PACKET_SIZE,
+                                  MSG_DONTWAIT, (struct sockaddr *)&addr, &addrLen);
             }
 #endif
             lwm2m_handle_packet(contextP, buffer, numBytes, connP);
@@ -586,7 +616,13 @@ uint8_t lwm2m_buffer_send(void * sessionH,
     while (offset != length)
     {
 #ifdef USE_MBEDTLS
-        nbSent = mbedtls_ssl_write(&connP->ssl, buffer + offset, length - offset);
+        if (connP->securityMode == LWM2M_SECURITY_MODE_PRE_SHARED_KEY) {
+            printf("%s, %d\n", __func__, __LINE__);
+          nbSent = mbedtls_ssl_write(&connP->ssl, buffer + offset, length - offset);
+        } else {
+          nbSent = sendto(connP->sock, buffer + offset, length - offset, 0,
+                          (struct sockaddr *)&(connP->addr), connP->addrLen);
+        }
 #else
         nbSent = sendto(connP->sock, buffer + offset, length - offset, 0, (struct sockaddr *)&(connP->addr), connP->addrLen);
 #endif
@@ -618,7 +654,7 @@ void * lwm2m_connect_server(uint16_t secObjInstID,
 
     if (!lwm2m_get_server_uri(secObjInstID, uri, sizeof(uri)))
         return NULL;
-
+    
     #ifdef WITH_LOG
     LOG("Connecting to %s\r\n", uri);
     #endif
@@ -631,6 +667,38 @@ void * lwm2m_connect_server(uint16_t secObjInstID,
         printf("Connection creation failed.\r\n");
     }
     else {
+        newConnP->pskLen = sizeof(newConnP->psk);
+        if (!lwm2m_get_server_security(secObjInstID,
+                                  &newConnP->securityMode,
+                                  &newConnP->psk,
+                                  &newConnP->pskLen,
+                                  &newConnP->identity)
+            ) {
+              printf("Get server security information failed.\r\n");
+              connection_free(newConnP);
+              return NULL;
+        }
+#ifdef USE_MBEDTLS
+        if (lwm2m_mbedtls_ssl_init(newConnP) < 0) {
+          connection_free(newConnP);
+          newConnP = NULL;
+          return NULL;
+        }
+
+        if (lwm2m_mbedtls_set_config(newConnP) < 0) {
+          lwm2m_mbedtls_ssl_close(newConnP);
+          connection_free(newConnP);
+          newConnP = NULL;
+          return NULL;
+        }
+
+        if (lwm2m_mbedtls_ssl_setup(newConnP) < 0) {
+          lwm2m_mbedtls_ssl_close(newConnP);
+          connection_free(newConnP);
+          newConnP = NULL;
+          return NULL;
+        }
+#endif
         network->connection_list = newConnP;
     }
 
@@ -729,24 +797,9 @@ connection_t * connection_create(network_t* network,
             memcpy(&(connP->addr), sa, sl);
             connP->addrLen = sl;
             connP->next = (struct _connection_t *)network->connection_list;
-#ifdef USE_MBEDTLS
-            if (lwm2m_mbedtls_ssl_init(connP) < 0) {
-              free(connP);
-              connP = NULL;
-              goto connection_create_exit;
-            }
-
-            if (lwm2m_mbedtls_ssl_setup(connP) < 0) {
-              lwm2m_mbedtls_ssl_close(connP);
-              free(connP);
-              connP = NULL;
-              goto connection_create_exit;
-            }
-#endif
         }
     }
 
-connection_create_exit:
     if (NULL != servinfo) {
         freeaddrinfo(servinfo);
     }
