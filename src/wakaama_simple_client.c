@@ -13,8 +13,6 @@ void lwm2m_client_close() {
     contextP = NULL;
 }
 
-
-
 void lwm2m_device_res_has_changed(uint16_t res_id) {
     lwm2m_uri_t uri;
     uri.flag = 0;
@@ -34,6 +32,31 @@ bool lwm2m_get_server_uri(uint16_t security_instance_id, char* uriBuffer, size_t
 
     strncpy(uriBuffer, securityInstance->uri, buffer_len);
     uriBuffer[buffer_len-1] = '\0';
+    return true;
+}
+
+bool lwm2m_get_server_security(uint16_t security_instance_id, uint8_t *securityMode,
+                               unsigned char **psk, size_t *pskLen,
+                               char **identity) {
+    if (NULL == psk || 0 == pskLen || NULL == identity || NULL == securityMode)
+      return false;
+                             
+    lwm2m_object_t * securityObjP = contextP->objectList;
+    security_instance_t * securityInstance;
+    securityInstance = (security_instance_t *)LWM2M_LIST_FIND(securityObjP->instanceList, security_instance_id);
+    int len = 0;
+    
+    if (NULL == securityInstance) return false;
+
+    *securityMode = securityInstance->securityMode;
+    if (securityInstance->securityMode == LWM2M_SECURITY_MODE_NONE){
+      return true;
+    }
+
+    *psk = (unsigned char*)lwm2m_strdup(securityInstance->secretKey);
+    *pskLen = securityInstance->secretKeyLen;
+    *identity = lwm2m_strdup(securityInstance->publicIdentity);
+    
     return true;
 }
 
@@ -109,7 +132,7 @@ uint8_t lwm2m_add_server(uint16_t shortServerID, const char* uri, uint32_t lifet
     memset(securityInstance, 0, sizeof(security_instance_t));
     securityInstance->instanceId = lwm2m_list_newId(securityObjP->instanceList);
     securityInstance->uri = lwm2m_strdup(uri);
-    securityInstance->isBootstrap = false;
+    securityInstance->isBootstrap = isBootstrap;
     securityInstance->shortID = shortServerID;
     securityInstance->clientHoldOffTime = 10;
     securityInstance->securityMode = LWM2M_SECURITY_MODE_NONE;
@@ -118,9 +141,9 @@ uint8_t lwm2m_add_server(uint16_t shortServerID, const char* uri, uint32_t lifet
     if (publicId != NULL || psk != NULL)
     {
         securityInstance->securityMode = LWM2M_SECURITY_MODE_PRE_SHARED_KEY;
-        securityInstance->publicIdentity = strdup(publicId);
+        securityInstance->publicIdentity = lwm2m_strdup(publicId);
         securityInstance->publicIdLen = strlen(publicId);
-        securityInstance->secretKey = strdup(psk);
+        securityInstance->secretKey = lwm2m_strdup(psk);
         securityInstance->secretKeyLen = pskLen;
     }
     #endif
