@@ -130,7 +130,6 @@ int lwm2m_mbedtls_recvfrom_nb(void *ctx, unsigned char *buf, size_t len,
   }
   if (ret < 0) return MBEDTLS_ERR_SSL_WANT_READ;
     
-  printf("%s, %d\n", __func__, __LINE__);
   recvLen = recvfrom(fd, buf, len, MSG_DONTWAIT, (struct sockaddr*)&addr, &sock_len);
   printf("%s, %d\n", __func__, __LINE__);
   return recvLen;
@@ -514,6 +513,8 @@ bool lwm2m_network_process(lwm2m_context_t * contextP) {
                 printf("memory alloc for new connection failed");
                 goto failed;
             }
+            
+            memset(connP, 0, sizeof(connection_t));
             connP->sock = network->socket_handle[c];
             memcpy(&(connP->addr), (struct sockaddr *)&addr, addrLen);
             connP->addrLen = addrLen;
@@ -793,6 +794,7 @@ connection_t * connection_create(network_t* network,
         connP = (connection_t *)malloc(sizeof(connection_t));
         if (connP != NULL)
         {
+            memset(connP, 0, sizeof(connection_t));
             connP->sock = s;
             memcpy(&(connP->addr), sa, sl);
             connP->addrLen = sl;
@@ -817,6 +819,16 @@ void connection_free(connection_t * connList)
 #ifdef USE_MBEDTLS   
         lwm2m_mbedtls_ssl_close(connList);
 #endif
+        if(connList->psk) {
+          vPortFree(connList->psk);
+          connList->psk = NULL;
+        }
+        
+        if (connList->identity) {
+          vPortFree(connList->identity);
+          connList->identity = NULL;
+        }
+        
         free(connList);
 
         connList = nextP;
