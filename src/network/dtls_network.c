@@ -395,10 +395,10 @@ uint8_t lwm2m_network_init(lwm2m_context_t * contextP, const char *localPort) {
                         F_SETFL, opt);
           
             // bind
-        struct sockaddr_in c_addr;
-  c_addr.sin_family = AF_INET;
-  c_addr.sin_addr.s_addr = inet_addr("192.168.2.208");
-  c_addr.sin_port = htons(12873);
+            struct sockaddr_in c_addr;
+            c_addr.sin_family = AF_INET;
+            c_addr.sin_addr.s_addr = inet_addr("0.0.0.0");
+            c_addr.sin_port = htons(12873);
   
             //if (-1 == bind(network->socket_handle[network->open_listen_sockets], p->ai_addr, p->ai_addrlen))
             if (-1 == bind(network->socket_handle[network->open_listen_sockets], (struct sockaddr*)&c_addr, sizeof(c_addr)))
@@ -469,7 +469,7 @@ bool lwm2m_network_process(lwm2m_context_t * contextP) {
         max_fd = network->socket_handle[c];
     }
   
-  tv.tv_sec = 30;
+  tv.tv_sec = 10;
   tv.tv_usec = 0;
   
   ret = select(max_fd + 1, &read_fds, NULL, NULL, &tv);
@@ -552,9 +552,7 @@ bool lwm2m_network_process(lwm2m_context_t * contextP) {
             
 #ifdef USE_MBEDTLS
             if (connP->securityMode == LWM2M_SECURITY_MODE_PRE_SHARED_KEY) {
-                printf("%s, %d\n", __func__, __LINE__);
               if ((numBytes = mbedtls_ssl_read(&connP->ssl, buffer, MAX_PACKET_SIZE)) <= 0) {
-                printf("%s, %d\n", __func__, __LINE__);
                 continue;
               }
             } else {
@@ -618,7 +616,6 @@ uint8_t lwm2m_buffer_send(void * sessionH,
     {
 #ifdef USE_MBEDTLS
         if (connP->securityMode == LWM2M_SECURITY_MODE_PRE_SHARED_KEY) {
-            printf("%s, %d\n", __func__, __LINE__);
           nbSent = mbedtls_ssl_write(&connP->ssl, buffer + offset, length - offset);
         } else {
           nbSent = sendto(connP->sock, buffer + offset, length - offset, 0,
